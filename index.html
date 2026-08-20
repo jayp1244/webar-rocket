@@ -1,11 +1,9 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>3D Rocket Coloring Book</title>
-    
     <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
-
     <script type="importmap">
     {
       "imports": {
@@ -34,100 +32,144 @@
       import * as THREE from 'three';
       import { MindARThree } from 'mindar-image-three';
 
-      // FIX 3: Added stabilization parameters to the MindAR setup
       const mindarThree = new MindARThree({
         container: document.querySelector("#container"),
         imageTargetSrc: "./rocket.mind",
-        filterMinCF: 0.0001, // Greatly reduces jitter
-        filterBeta: 10,      // Smooths out fast movements
-        missTolerance: 15    // Prevents flickering if the camera loses track briefly
+        filterMinCF: 0.0001, 
+        filterBeta: 10,
+        missTolerance: 20
       });
       const {renderer, scene, camera} = mindarThree;
 
       const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
       scene.add(light);
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
       dirLight.position.set(0, 5, 5);
       scene.add(dirLight);
 
+      // The tracking anchor (invisible)
       const anchor = mindarThree.addAnchor(0);
-      const rocketGroup = new THREE.Group();
       
+      // The visual rocket (detached for smooth LERP stabilization)
+      const visualRocket = new THREE.Group();
+      scene.add(visualRocket); // Added to scene, not the anchor
+
       const matBody = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
       const matNose = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
       const matFins = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
 
       const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.8, 32);
       const body = new THREE.Mesh(bodyGeo, matBody);
-      rocketGroup.add(body);
+      visualRocket.add(body);
 
       const noseGeo = new THREE.ConeGeometry(0.2, 0.4, 32);
       const nose = new THREE.Mesh(noseGeo, matNose);
       nose.position.y = 0.6;
-      rocketGroup.add(nose);
+      visualRocket.add(nose);
 
       const finGeo = new THREE.BoxGeometry(0.6, 0.2, 0.05);
       const fin1 = new THREE.Mesh(finGeo, matFins);
       fin1.position.set(0, -0.3, 0);
-      rocketGroup.add(fin1);
+      visualRocket.add(fin1);
       
       const windowGeo = new THREE.TorusGeometry(0.1, 0.02, 16, 100);
       const windowRim = new THREE.Mesh(windowGeo, new THREE.MeshStandardMaterial({color: 0x333333}));
       windowRim.position.set(0, 0.1, 0.2);
-      rocketGroup.add(windowRim);
+      visualRocket.add(windowRim);
 
-      rocketGroup.scale.set(0.8, 0.8, 0.8);
-      rocketGroup.rotation.x = Math.PI / 2;
-      
-      // FIX 2: Increased Z-position to make the rocket float above the paper
-      rocketGroup.position.z = 0.8; 
-      
-      anchor.group.add(rocketGroup);
+      visualRocket.scale.set(0.8, 0.8, 0.8);
+      visualRocket.visible = false; // Hide until tracking starts
 
+      // SMOKE PARTICLE SYSTEM
+      const particleCount = 60;
+      const particles = new THREE.InstancedMesh(
+        new THREE.SphereGeometry(0.08, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xdddddd, transparent: true, opacity: 0.6 }),
+        particleCount
+      );
+      const dummy = new THREE.Object3D();
+      const particleData = [];
+      for(let i = 0; i < particleCount; i++) {
+        particleData.push({
+          x: (Math.random() - 0.5) * 0.2,
+          y: -0.4,
+          z: (Math.random() - 0.5) * 0.2,
+          life: Math.random() * 100
+        });
+      }
+      particles.visible = false;
+      visualRocket.add(particles);
+
+      // Canvas for sampling
       const canvas = document.getElementById('hiddenCanvas');
       const ctx = canvas.getContext('2d');
       let colorsExtracted = false;
+      let state = "WAITING"; // WAITING, HOVERING, LAUNCHING
+      let launchVelocity = 0;
 
-      function getAverageColor(xPos, yPos, size) {
-        // FIX 1a: Grab the video feed directly from MindAR
+      // 3D to 2D Screen Projection for highly accurate color sampling
+      function getColorAt3DCoordinate(localX, localY, localZ, radius) {
         const video = mindarThree.video;
         if (!video || !video.videoWidth) return null;
+        
+        // 1. Get the 3D position relative to the paper target
+        const vec = new THREE.Vector3(localX, localY, localZ);
+        anchor.group.localToWorld(vec);
+        
+        // 2. Project mathematically back through the camera lens
+        vec.project(camera); 
+        
+        // 3. Map to raw video pixels
+        const screenX = Math.floor((vec.x * 0.5 + 0.5) * video.videoWidth);
+        const screenY = Math.floor((-vec.y * 0.5 + 0.5) * video.videoHeight);
         
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        const startX = Math.floor(canvas.width * xPos);
-        const startY = Math.floor(canvas.height * yPos);
-        
-        const frameData = ctx.getImageData(startX, startY, size, size).data;
-        let r = 0, g = 0, b = 0;
+        const frameData = ctx.getImageData(screenX - radius, screenY - radius, radius*2, radius*2).data;
+        let r = 0, g = 0, b = 0, validPixels = 0;
         
         for (let i = 0; i < frameData.length; i += 4) {
-          r += frameData[i];
-          g += frameData[i+1];
-          b += frameData[i+2];
+          const pr = frameData[i], pg = frameData[i+1], pb = frameData[i+2];
+          // Filter out pure black lines or pure white paper glare
+          if ((pr > 40 || pg > 40 || pb > 40) && (pr < 240 || pg < 240 || pb < 240)) {
+            r += pr; g += pg; b += pb;
+            validPixels++;
+          }
         }
         
-        const pixelCount = frameData.length / 4;
-        return new THREE.Color(`rgb(${Math.floor(r/pixelCount)}, ${Math.floor(g/pixelCount)}, ${Math.floor(b/pixelCount)})`);
+        if(validPixels === 0) return null;
+        return new THREE.Color(`rgb(${Math.floor(r/validPixels)}, ${Math.floor(g/validPixels)}, ${Math.floor(b/validPixels)})`);
       }
 
       anchor.onTargetFound = () => {
-        if(!colorsExtracted) {
-          // FIX 1b: Added a 500ms delay so the camera can focus and adjust to the lighting first
+        if(state === "WAITING") {
+          visualRocket.visible = true;
+          visualRocket.position.copy(anchor.group.position);
+          
+          // Wait 1 second to let camera focus, then grab colors
           setTimeout(() => {
-            // Increased the sampling size from 20 to 40 pixels for a better color average
-            const bodyColor = getAverageColor(0.50, 0.60, 40); 
-            const noseColor = getAverageColor(0.50, 0.30, 40); 
-            const finColor = getAverageColor(0.30, 0.70, 40);  
-            
-            if(bodyColor) { matBody.color = bodyColor; matBody.needsUpdate = true; }
-            if(noseColor) { matNose.color = noseColor; matNose.needsUpdate = true; }
-            if(finColor) { matFins.color = finColor; matFins.needsUpdate = true; }
-            
-            colorsExtracted = true;
-          }, 500); 
+            if(!colorsExtracted) {
+              const bodyColor = getColorAt3DCoordinate(0, 0, 0, 20); // Center
+              const noseColor = getColorAt3DCoordinate(0, 0.4, 0, 20); // Top
+              const finColor = getColorAt3DCoordinate(-0.4, -0.3, 0, 15); // Bottom Left
+              
+              if(bodyColor) matBody.color = bodyColor;
+              if(noseColor) matNose.color = noseColor;
+              if(finColor) matFins.color = finColor;
+              
+              colorsExtracted = true;
+            }
+          }, 1000);
+
+          state = "HOVERING";
+
+          // Start the 5-second countdown to launch
+          setTimeout(() => {
+            state = "LAUNCHING";
+            particles.visible = true;
+          }, 5000);
         }
       };
 
@@ -135,7 +177,65 @@
         try {
           document.querySelector("#startButton").style.display = "none";
           await mindarThree.start();
+          
+          // Main Animation Loop
           renderer.setAnimationLoop(() => {
+            
+            // LERP Stabilization: Smoothly follow the tracker
+            if(state === "HOVERING" && anchor.group.visible) {
+              const targetQuat = anchor.group.quaternion.clone();
+              
+              // Apply fixed rotation to stand on paper + raise Z-height to float in the air
+              const rotationOffset = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
+              targetQuat.multiply(rotationOffset);
+              
+              const targetPos = anchor.group.position.clone();
+              
+              // Extract the Z-up direction of the paper target
+              const upVector = new THREE.Vector3(0, 0, 1).applyQuaternion(anchor.group.quaternion);
+              targetPos.add(upVector.multiplyScalar(1.5)); // Float 1.5 units off the page
+              
+              // Smoothly glide towards the position (removes all jitter)
+              visualRocket.position.lerp(targetPos, 0.1);
+              visualRocket.quaternion.slerp(targetQuat, 0.1);
+            }
+            
+            // Launch Sequence Animation
+            if(state === "LAUNCHING") {
+              // Accelerate upwards
+              launchVelocity += 0.005;
+              
+              // Move along the rocket's current local Y axis (pointing up)
+              visualRocket.translateY(launchVelocity); 
+              
+              // Animate smoke particles blowing downward
+              for(let i = 0; i < particleCount; i++) {
+                let p = particleData[i];
+                p.y -= 0.02; // Move down
+                p.x += (Math.random() - 0.5) * 0.05; // Spread out
+                p.z += (Math.random() - 0.5) * 0.05;
+                p.life -= 1;
+                
+                // Reset particle to top if it dies
+                if(p.life <= 0) {
+                  p.y = -0.4;
+                  p.x = (Math.random() - 0.5) * 0.1;
+                  p.z = (Math.random() - 0.5) * 0.1;
+                  p.life = 100;
+                }
+                
+                dummy.position.set(p.x, p.y, p.z);
+                
+                // Shrink particles as they fall
+                const scale = Math.max(0, p.life / 100);
+                dummy.scale.set(scale, scale, scale);
+                
+                dummy.updateMatrix();
+                particles.setMatrixAt(i, dummy.matrix);
+              }
+              particles.instanceMatrix.needsUpdate = true;
+            }
+
             renderer.render(scene, camera);
           });
         } catch (error) {
