@@ -35,7 +35,7 @@
       const mindarThree = new MindARThree({
         container: document.querySelector("#container"),
         imageTargetSrc: "./rocket.mind",
-        filterMinCF: 0.0001, 
+        filterMinCF: 0.0001, // Smooths jitter
         filterBeta: 10,
         missTolerance: 20
       });
@@ -47,12 +47,10 @@
       dirLight.position.set(0, 5, 5);
       scene.add(dirLight);
 
-      // The tracking anchor (invisible)
+      // 1. Re-attach the rocket group directly to the anchor
       const anchor = mindarThree.addAnchor(0);
-      
-      // The visual rocket (detached for smooth LERP stabilization)
       const visualRocket = new THREE.Group();
-      scene.add(visualRocket); // Added to scene, not the anchor
+      anchor.group.add(visualRocket); 
 
       const matBody = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
       const matNose = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
@@ -78,9 +76,12 @@
       visualRocket.add(windowRim);
 
       visualRocket.scale.set(0.8, 0.8, 0.8);
-      visualRocket.visible = false; // Hide until tracking starts
+      
+      // 2. Set static hover height along the Z-axis
+      visualRocket.position.z = 1.2; 
+      visualRocket.rotation.x = Math.PI / 2;
 
-      // SMOKE PARTICLE SYSTEM
+      // 3. Smoke Particle System
       const particleCount = 60;
       const particles = new THREE.InstancedMesh(
         new THREE.SphereGeometry(0.08, 8, 8),
@@ -100,28 +101,23 @@
       particles.visible = false;
       visualRocket.add(particles);
 
-      // Canvas for sampling
       const canvas = document.getElementById('hiddenCanvas');
       const ctx = canvas.getContext('2d');
       let colorsExtracted = false;
-      let state = "WAITING"; // WAITING, HOVERING, LAUNCHING
+      let state = "WAITING"; 
       let launchVelocity = 0;
 
-      // 3D to 2D Screen Projection for highly accurate color sampling
+      // 4. Matrix-Assisted Color Coordinates
       function getColorAt3DCoordinate(localX, localY, localZ, radius) {
         const video = mindarThree.video;
         if (!video || !video.videoWidth) return null;
         
-        // 1. Get the 3D position relative to the paper target
-        const vec = new THREE.Vector3(localX, localY, localZ);
-        anchor.group.localToWorld(vec);
+        const dummyVec = new THREE.Vector3(localX, localY, localZ);
+        dummyVec.applyMatrix4(anchor.group.matrixWorld);
+        dummyVec.project(camera); 
         
-        // 2. Project mathematically back through the camera lens
-        vec.project(camera); 
-        
-        // 3. Map to raw video pixels
-        const screenX = Math.floor((vec.x * 0.5 + 0.5) * video.videoWidth);
-        const screenY = Math.floor((-vec.y * 0.5 + 0.5) * video.videoHeight);
+        const screenX = Math.floor((dummyVec.x * 0.5 + 0.5) * video.videoWidth);
+        const screenY = Math.floor((-dummyVec.y * 0.5 + 0.5) * video.videoHeight);
         
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
@@ -132,7 +128,7 @@
         
         for (let i = 0; i < frameData.length; i += 4) {
           const pr = frameData[i], pg = frameData[i+1], pb = frameData[i+2];
-          // Filter out pure black lines or pure white paper glare
+          // Ignores pure black lines and stark white paper glare
           if ((pr > 40 || pg > 40 || pb > 40) && (pr < 240 || pg < 240 || pb < 240)) {
             r += pr; g += pg; b += pb;
             validPixels++;
@@ -145,15 +141,14 @@
 
       anchor.onTargetFound = () => {
         if(state === "WAITING") {
-          visualRocket.visible = true;
-          visualRocket.position.copy(anchor.group.position);
+          state = "HOVERING";
           
-          // Wait 1 second to let camera focus, then grab colors
           setTimeout(() => {
             if(!colorsExtracted) {
-              const bodyColor = getColorAt3DCoordinate(0, 0, 0, 20); // Center
-              const noseColor = getColorAt3DCoordinate(0, 0.4, 0, 20); // Top
-              const finColor = getColorAt3DCoordinate(-0.4, -0.3, 0, 15); // Bottom Left
+              // Targeted using the image's layout (X=0 is center, Y=+ is up)
+              const bodyColor = getColorAt3DCoordinate(0, -0.1, 0, 20); 
+              const noseColor = getColorAt3DCoordinate(0, 0.3, 0, 15); 
+              const finColor = getColorAt3DCoordinate(-0.35, -0.35, 0, 15); 
               
               if(bodyColor) matBody.color = bodyColor;
               if(noseColor) matNose.color = noseColor;
@@ -163,9 +158,6 @@
             }
           }, 1000);
 
-          state = "HOVERING";
-
-          // Start the 5-second countdown to launch
           setTimeout(() => {
             state = "LAUNCHING";
             particles.visible = true;
@@ -178,45 +170,19 @@
           document.querySelector("#startButton").style.display = "none";
           await mindarThree.start();
           
-          // Main Animation Loop
           renderer.setAnimationLoop(() => {
-            
-            // LERP Stabilization: Smoothly follow the tracker
-            if(state === "HOVERING" && anchor.group.visible) {
-              const targetQuat = anchor.group.quaternion.clone();
-              
-              // Apply fixed rotation to stand on paper + raise Z-height to float in the air
-              const rotationOffset = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
-              targetQuat.multiply(rotationOffset);
-              
-              const targetPos = anchor.group.position.clone();
-              
-              // Extract the Z-up direction of the paper target
-              const upVector = new THREE.Vector3(0, 0, 1).applyQuaternion(anchor.group.quaternion);
-              targetPos.add(upVector.multiplyScalar(1.5)); // Float 1.5 units off the page
-              
-              // Smoothly glide towards the position (removes all jitter)
-              visualRocket.position.lerp(targetPos, 0.1);
-              visualRocket.quaternion.slerp(targetQuat, 0.1);
-            }
-            
-            // Launch Sequence Animation
+            // 5. Vertical Launch Translation
             if(state === "LAUNCHING") {
-              // Accelerate upwards
               launchVelocity += 0.005;
-              
-              // Move along the rocket's current local Y axis (pointing up)
               visualRocket.translateY(launchVelocity); 
               
-              // Animate smoke particles blowing downward
               for(let i = 0; i < particleCount; i++) {
                 let p = particleData[i];
-                p.y -= 0.02; // Move down
-                p.x += (Math.random() - 0.5) * 0.05; // Spread out
+                p.y -= 0.02; 
+                p.x += (Math.random() - 0.5) * 0.05; 
                 p.z += (Math.random() - 0.5) * 0.05;
                 p.life -= 1;
                 
-                // Reset particle to top if it dies
                 if(p.life <= 0) {
                   p.y = -0.4;
                   p.x = (Math.random() - 0.5) * 0.1;
@@ -225,11 +191,8 @@
                 }
                 
                 dummy.position.set(p.x, p.y, p.z);
-                
-                // Shrink particles as they fall
                 const scale = Math.max(0, p.life / 100);
                 dummy.scale.set(scale, scale, scale);
-                
                 dummy.updateMatrix();
                 particles.setMatrixAt(i, dummy.matrix);
               }
