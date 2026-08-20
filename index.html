@@ -55,30 +55,27 @@
       const matNose = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
       const matFins = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
 
-      const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.8, 32);
+      // Assembly scaled exactly to the 2D drawing dimensions
+      const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.5, 32);
       const body = new THREE.Mesh(bodyGeo, matBody);
       visualRocket.add(body);
 
-      const noseGeo = new THREE.ConeGeometry(0.2, 0.4, 32);
+      const noseGeo = new THREE.ConeGeometry(0.2, 0.3, 32);
       const nose = new THREE.Mesh(noseGeo, matNose);
-      nose.position.y = 0.6;
+      nose.position.y = 0.4;
       visualRocket.add(nose);
 
       const finGeo = new THREE.BoxGeometry(0.6, 0.2, 0.05);
       const fin1 = new THREE.Mesh(finGeo, matFins);
-      fin1.position.set(0, -0.3, 0);
+      fin1.position.y = -0.15;
       visualRocket.add(fin1);
       
-      const windowGeo = new THREE.TorusGeometry(0.1, 0.02, 16, 100);
+      const windowGeo = new THREE.TorusGeometry(0.08, 0.02, 16, 100);
       const windowRim = new THREE.Mesh(windowGeo, new THREE.MeshStandardMaterial({color: 0x333333}));
       windowRim.position.set(0, 0.1, 0.2);
       visualRocket.add(windowRim);
 
-      // SCALED DOWN AND LOWERED SO IT STAYS IN THE CAMERA VIEW
-      visualRocket.scale.set(0.5, 0.5, 0.5);
-      visualRocket.position.z = 0.2; 
-      visualRocket.rotation.x = Math.PI / 2;
-
+      // SMOKE PARTICLE SYSTEM
       const particleCount = 60;
       const particles = new THREE.InstancedMesh(
         new THREE.SphereGeometry(0.08, 8, 8),
@@ -88,83 +85,71 @@
       const dummy = new THREE.Object3D();
       const particleData = [];
       for(let i = 0; i < particleCount; i++) {
-        particleData.push({
-          x: (Math.random() - 0.5) * 0.2,
-          y: -0.4,
-          z: (Math.random() - 0.5) * 0.2,
-          life: Math.random() * 100
-        });
+        particleData.push({ x: 0, y: 0, z: 0, life: Math.random() * 100 });
       }
       particles.visible = false;
       visualRocket.add(particles);
 
       const canvas = document.getElementById('hiddenCanvas');
-      const ctx = canvas.getContext('2d');
-      let colorsExtracted = false;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      
       let state = "WAITING"; 
-      let launchVelocity = 0;
-      let launchTimeout = null;
+      let animTimer = 0;
 
-      function getColorAt3DCoordinate(localX, localY, localZ, radius) {
-        const video = mindarThree.video;
-        if (!video || !video.videoWidth) return null;
-        
-        const dummyVec = new THREE.Vector3(localX, localY, localZ);
-        dummyVec.applyMatrix4(anchor.group.matrixWorld);
-        dummyVec.project(camera); 
-        
-        const screenX = Math.floor((dummyVec.x * 0.5 + 0.5) * video.videoWidth);
-        const screenY = Math.floor((-dummyVec.y * 0.5 + 0.5) * video.videoHeight);
-        
+      // Drastically simplified and robust color extraction 
+      function extractColors() {
+        const vids = document.getElementsByTagName('video');
+        if (vids.length === 0) return;
+        const video = vids[0];
+        if (!video.videoWidth) return;
+
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        const frameData = ctx.getImageData(screenX - radius, screenY - radius, radius*2, radius*2).data;
-        let r = 0, g = 0, b = 0, validPixels = 0;
-        
-        for (let i = 0; i < frameData.length; i += 4) {
-          const pr = frameData[i], pg = frameData[i+1], pb = frameData[i+2];
-          if ((pr > 40 || pg > 40 || pb > 40) && (pr < 240 || pg < 240 || pb < 240)) {
-            r += pr; g += pg; b += pb;
-            validPixels++;
-          }
+        try {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        } catch(e) {
+          console.warn("Canvas drawing blocked by mobile browser security.");
+          return;
         }
+
+        const sample = (x, y, radius) => {
+          const data = ctx.getImageData(x - radius, y - radius, radius*2, radius*2).data;
+          let r=0, g=0, b=0, count=0;
+          for(let i=0; i<data.length; i+=4) {
+            // Ignore pure black lines and white glare
+            if ((data[i]>40 || data[i+1]>40 || data[i+2]>40) && (data[i]<240 || data[i+1]<240 || data[i+2]<240)) {
+              r+=data[i]; g+=data[i+1]; b+=data[i+2]; count++;
+            }
+          }
+          if(count===0) return null;
+          return new THREE.Color(`rgb(${Math.floor(r/count)}, ${Math.floor(g/count)}, ${Math.floor(b/count)})`);
+        };
+
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
         
-        if(validPixels === 0) return null;
-        return new THREE.Color(`rgb(${Math.floor(r/validPixels)}, ${Math.floor(g/validPixels)}, ${Math.floor(b/validPixels)})`);
+        const bodyColor = sample(cx, cy, 30); // Center of screen
+        const noseColor = sample(cx, cy - (canvas.height * 0.15), 20); // Top
+        const finColor = sample(cx - (canvas.width * 0.15), cy + (canvas.height * 0.1), 20); // Bottom left
+
+        if (bodyColor) matBody.color.set(bodyColor);
+        if (noseColor) matNose.color.set(noseColor);
+        if (finColor) matFins.color.set(finColor);
       }
 
       anchor.onTargetFound = () => {
-        // RESET SEQUENCE: Ensure the rocket comes back if it already flew away
-        visualRocket.position.set(0, 0, 0.2);
-        launchVelocity = 0;
+        // Reset the animation every time the paper is found
+        animTimer = 0;
+        state = "ALIGN";
+        
+        // Lay perfectly flat on the paper (matching silhouette)
+        visualRocket.rotation.x = 0;
+        visualRocket.position.set(0, 0, 0.2); 
         particles.visible = false;
-        state = "HOVERING";
         
-        if (launchTimeout) clearTimeout(launchTimeout);
-        
-        setTimeout(() => {
-          if(!colorsExtracted && anchor.group.visible) {
-            const bodyColor = getColorAt3DCoordinate(0, -0.1, 0, 20); 
-            const noseColor = getColorAt3DCoordinate(0, 0.3, 0, 15); 
-            const finColor = getColorAt3DCoordinate(-0.35, -0.35, 0, 15); 
-            
-            if(bodyColor) matBody.color = bodyColor;
-            if(noseColor) matNose.color = noseColor;
-            if(finColor) matFins.color = finColor;
-            
-            colorsExtracted = true;
-          }
-        }, 800);
-
-        // Start launch sequence countdown
-        launchTimeout = setTimeout(() => {
-          if(anchor.group.visible) {
-            state = "LAUNCHING";
-            particles.visible = true;
-          }
-        }, 5000);
+        // Sample colors exactly 0.5 seconds after finding the page
+        setTimeout(extractColors, 500);
       };
 
       document.querySelector("#startButton").addEventListener("click", async () => {
@@ -173,33 +158,49 @@
           await mindarThree.start();
           
           renderer.setAnimationLoop(() => {
-            if(state === "LAUNCHING" && anchor.group.visible) {
-              launchVelocity += 0.005;
-              visualRocket.translateY(launchVelocity); 
+            if (anchor.group.visible) {
+              animTimer += 0.016; // Time tracking (assuming 60fps)
               
-              for(let i = 0; i < particleCount; i++) {
-                let p = particleData[i];
-                p.y -= 0.03; 
-                p.x += (Math.random() - 0.5) * 0.08; 
-                p.z += (Math.random() - 0.5) * 0.08;
-                p.life -= 1;
+              if (animTimer > 2.0 && animTimer < 4.0) {
+                // PHASE 2: Stand Up
+                state = "STAND";
+                const progress = (animTimer - 2.0) / 2.0; 
+                // Smoothly rotate 90 degrees to point at the camera
+                visualRocket.rotation.x = progress * (Math.PI / 2);
+                visualRocket.position.y = progress * (-0.2); 
                 
-                if(p.life <= 0) {
-                  p.y = -0.4;
-                  p.x = (Math.random() - 0.5) * 0.1;
-                  p.z = (Math.random() - 0.5) * 0.1;
-                  p.life = 100;
+              } else if (animTimer >= 4.0) {
+                // PHASE 3: Ignite and Launch
+                state = "LAUNCH";
+                particles.visible = true;
+                
+                // Fly straight up (locally +Y)
+                visualRocket.translateY(0.02);
+                
+                // Animate Smoke
+                for(let i = 0; i < particleCount; i++) {
+                  let p = particleData[i];
+                  p.y -= 0.05; // Fall down locally
+                  p.x += (Math.random() - 0.5) * 0.1; 
+                  p.z += (Math.random() - 0.5) * 0.1;
+                  p.life -= 1;
+                  
+                  if(p.life <= 0) {
+                    p.y = -0.3; // Reset near the thruster
+                    p.x = (Math.random() - 0.5) * 0.1;
+                    p.z = (Math.random() - 0.5) * 0.1;
+                    p.life = 100;
+                  }
+                  
+                  dummy.position.set(p.x, p.y, p.z);
+                  const scale = Math.max(0, p.life / 100);
+                  dummy.scale.set(scale, scale, scale);
+                  dummy.updateMatrix();
+                  particles.setMatrixAt(i, dummy.matrix);
                 }
-                
-                dummy.position.set(p.x, p.y, p.z);
-                const scale = Math.max(0, p.life / 100);
-                dummy.scale.set(scale, scale, scale);
-                dummy.updateMatrix();
-                particles.setMatrixAt(i, dummy.matrix);
+                particles.instanceMatrix.needsUpdate = true;
               }
-              particles.instanceMatrix.needsUpdate = true;
             }
-
             renderer.render(scene, camera);
           });
         } catch (error) {
