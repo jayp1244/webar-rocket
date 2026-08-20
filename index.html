@@ -35,19 +35,18 @@
       const mindarThree = new MindARThree({
         container: document.querySelector("#container"),
         imageTargetSrc: "./rocket.mind",
-        filterMinCF: 0.0001, // Smooths jitter
+        filterMinCF: 0.0001, 
         filterBeta: 10,
         missTolerance: 20
       });
       const {renderer, scene, camera} = mindarThree;
 
-      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1.2);
       scene.add(light);
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
       dirLight.position.set(0, 5, 5);
       scene.add(dirLight);
 
-      // 1. Re-attach the rocket group directly to the anchor
       const anchor = mindarThree.addAnchor(0);
       const visualRocket = new THREE.Group();
       anchor.group.add(visualRocket); 
@@ -75,13 +74,11 @@
       windowRim.position.set(0, 0.1, 0.2);
       visualRocket.add(windowRim);
 
-      visualRocket.scale.set(0.8, 0.8, 0.8);
-      
-      // 2. Set static hover height along the Z-axis
-      visualRocket.position.z = 1.2; 
+      // SCALED DOWN AND LOWERED SO IT STAYS IN THE CAMERA VIEW
+      visualRocket.scale.set(0.5, 0.5, 0.5);
+      visualRocket.position.z = 0.2; 
       visualRocket.rotation.x = Math.PI / 2;
 
-      // 3. Smoke Particle System
       const particleCount = 60;
       const particles = new THREE.InstancedMesh(
         new THREE.SphereGeometry(0.08, 8, 8),
@@ -106,8 +103,8 @@
       let colorsExtracted = false;
       let state = "WAITING"; 
       let launchVelocity = 0;
+      let launchTimeout = null;
 
-      // 4. Matrix-Assisted Color Coordinates
       function getColorAt3DCoordinate(localX, localY, localZ, radius) {
         const video = mindarThree.video;
         if (!video || !video.videoWidth) return null;
@@ -128,7 +125,6 @@
         
         for (let i = 0; i < frameData.length; i += 4) {
           const pr = frameData[i], pg = frameData[i+1], pb = frameData[i+2];
-          // Ignores pure black lines and stark white paper glare
           if ((pr > 40 || pg > 40 || pb > 40) && (pr < 240 || pg < 240 || pb < 240)) {
             r += pr; g += pg; b += pb;
             validPixels++;
@@ -140,29 +136,35 @@
       }
 
       anchor.onTargetFound = () => {
-        if(state === "WAITING") {
-          state = "HOVERING";
-          
-          setTimeout(() => {
-            if(!colorsExtracted) {
-              // Targeted using the image's layout (X=0 is center, Y=+ is up)
-              const bodyColor = getColorAt3DCoordinate(0, -0.1, 0, 20); 
-              const noseColor = getColorAt3DCoordinate(0, 0.3, 0, 15); 
-              const finColor = getColorAt3DCoordinate(-0.35, -0.35, 0, 15); 
-              
-              if(bodyColor) matBody.color = bodyColor;
-              if(noseColor) matNose.color = noseColor;
-              if(finColor) matFins.color = finColor;
-              
-              colorsExtracted = true;
-            }
-          }, 1000);
+        // RESET SEQUENCE: Ensure the rocket comes back if it already flew away
+        visualRocket.position.set(0, 0, 0.2);
+        launchVelocity = 0;
+        particles.visible = false;
+        state = "HOVERING";
+        
+        if (launchTimeout) clearTimeout(launchTimeout);
+        
+        setTimeout(() => {
+          if(!colorsExtracted && anchor.group.visible) {
+            const bodyColor = getColorAt3DCoordinate(0, -0.1, 0, 20); 
+            const noseColor = getColorAt3DCoordinate(0, 0.3, 0, 15); 
+            const finColor = getColorAt3DCoordinate(-0.35, -0.35, 0, 15); 
+            
+            if(bodyColor) matBody.color = bodyColor;
+            if(noseColor) matNose.color = noseColor;
+            if(finColor) matFins.color = finColor;
+            
+            colorsExtracted = true;
+          }
+        }, 800);
 
-          setTimeout(() => {
+        // Start launch sequence countdown
+        launchTimeout = setTimeout(() => {
+          if(anchor.group.visible) {
             state = "LAUNCHING";
             particles.visible = true;
-          }, 5000);
-        }
+          }
+        }, 5000);
       };
 
       document.querySelector("#startButton").addEventListener("click", async () => {
@@ -171,16 +173,15 @@
           await mindarThree.start();
           
           renderer.setAnimationLoop(() => {
-            // 5. Vertical Launch Translation
-            if(state === "LAUNCHING") {
+            if(state === "LAUNCHING" && anchor.group.visible) {
               launchVelocity += 0.005;
               visualRocket.translateY(launchVelocity); 
               
               for(let i = 0; i < particleCount; i++) {
                 let p = particleData[i];
-                p.y -= 0.02; 
-                p.x += (Math.random() - 0.5) * 0.05; 
-                p.z += (Math.random() - 0.5) * 0.05;
+                p.y -= 0.03; 
+                p.x += (Math.random() - 0.5) * 0.08; 
+                p.z += (Math.random() - 0.5) * 0.08;
                 p.life -= 1;
                 
                 if(p.life <= 0) {
