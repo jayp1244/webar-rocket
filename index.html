@@ -4,10 +4,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Rocket Coloring Book</title>
     
-    <!-- 1. ES Module Shim for older iOS compatibility -->
     <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
 
-    <!-- 2. Updated Import Map -->
     <script type="importmap">
     {
       "imports": {
@@ -36,9 +34,13 @@
       import * as THREE from 'three';
       import { MindARThree } from 'mindar-image-three';
 
+      // FIX 3: Added stabilization parameters to the MindAR setup
       const mindarThree = new MindARThree({
         container: document.querySelector("#container"),
-        imageTargetSrc: "./rocket.mind" 
+        imageTargetSrc: "./rocket.mind",
+        filterMinCF: 0.0001, // Greatly reduces jitter
+        filterBeta: 10,      // Smooths out fast movements
+        missTolerance: 15    // Prevents flickering if the camera loses track briefly
       });
       const {renderer, scene, camera} = mindarThree;
 
@@ -76,15 +78,21 @@
 
       rocketGroup.scale.set(0.8, 0.8, 0.8);
       rocketGroup.rotation.x = Math.PI / 2;
+      
+      // FIX 2: Increased Z-position to make the rocket float above the paper
+      rocketGroup.position.z = 0.8; 
+      
       anchor.group.add(rocketGroup);
 
-      const video = document.createElement('video');
       const canvas = document.getElementById('hiddenCanvas');
       const ctx = canvas.getContext('2d');
       let colorsExtracted = false;
 
       function getAverageColor(xPos, yPos, size) {
-        if (!video.videoWidth) return null;
+        // FIX 1a: Grab the video feed directly from MindAR
+        const video = mindarThree.video;
+        if (!video || !video.videoWidth) return null;
+        
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -106,29 +114,26 @@
       }
 
       anchor.onTargetFound = () => {
-        if(!colorsExtracted && video.readyState === video.HAVE_ENOUGH_DATA) {
-          const bodyColor = getAverageColor(0.50, 0.60, 20); 
-          const noseColor = getAverageColor(0.50, 0.30, 20); 
-          const finColor = getAverageColor(0.30, 0.70, 20);  
-          
-          if(bodyColor) matBody.color = bodyColor;
-          if(noseColor) matNose.color = noseColor;
-          if(finColor) matFins.color = finColor;
-          
-          colorsExtracted = true;
+        if(!colorsExtracted) {
+          // FIX 1b: Added a 500ms delay so the camera can focus and adjust to the lighting first
+          setTimeout(() => {
+            // Increased the sampling size from 20 to 40 pixels for a better color average
+            const bodyColor = getAverageColor(0.50, 0.60, 40); 
+            const noseColor = getAverageColor(0.50, 0.30, 40); 
+            const finColor = getAverageColor(0.30, 0.70, 40);  
+            
+            if(bodyColor) { matBody.color = bodyColor; matBody.needsUpdate = true; }
+            if(noseColor) { matNose.color = noseColor; matNose.needsUpdate = true; }
+            if(finColor) { matFins.color = finColor; matFins.needsUpdate = true; }
+            
+            colorsExtracted = true;
+          }, 500); 
         }
       };
 
-      // 3. Error Catching Wrapper
       document.querySelector("#startButton").addEventListener("click", async () => {
         try {
           document.querySelector("#startButton").style.display = "none";
-          
-          setTimeout(() => {
-            const vids = document.getElementsByTagName('video');
-            if(vids.length > 0) Object.assign(video, vids[0]);
-          }, 1500);
-
           await mindarThree.start();
           renderer.setAnimationLoop(() => {
             renderer.render(scene, camera);
