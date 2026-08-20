@@ -3,12 +3,17 @@
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Rocket Coloring Book</title>
-    <!-- Import Three.js and MindAR -->
+    
+    <!-- 1. ES Module Shim for older iOS compatibility -->
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+
+    <!-- 2. Updated Import Map -->
     <script type="importmap">
     {
       "imports": {
         "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "mindar-image-three":"https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
       }
     }
     </script>
@@ -31,71 +36,59 @@
       import * as THREE from 'three';
       import { MindARThree } from 'mindar-image-three';
 
-      // 1. Initialize MindAR
       const mindarThree = new MindARThree({
         container: document.querySelector("#container"),
-        imageTargetSrc: "./rocket.mind" // The compiled image target
+        imageTargetSrc: "./rocket.mind" 
       });
       const {renderer, scene, camera} = mindarThree;
 
-      // Add Lighting
       const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
       scene.add(light);
       const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
       dirLight.position.set(0, 5, 5);
       scene.add(dirLight);
 
-      // 2. Procedurally Generate the 3D Rocket
       const anchor = mindarThree.addAnchor(0);
       const rocketGroup = new THREE.Group();
       
-      // Materials (Initialized as white, will be updated by camera)
       const matBody = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
       const matNose = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
       const matFins = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.4});
 
-      // Body (Cylinder)
       const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.8, 32);
       const body = new THREE.Mesh(bodyGeo, matBody);
       rocketGroup.add(body);
 
-      // Nose (Cone)
       const noseGeo = new THREE.ConeGeometry(0.2, 0.4, 32);
       const nose = new THREE.Mesh(noseGeo, matNose);
       nose.position.y = 0.6;
       rocketGroup.add(nose);
 
-      // Fins (Small Cones/Boxes)
       const finGeo = new THREE.BoxGeometry(0.6, 0.2, 0.05);
       const fin1 = new THREE.Mesh(finGeo, matFins);
       fin1.position.set(0, -0.3, 0);
       rocketGroup.add(fin1);
       
-      // Window Rim (Torus)
       const windowGeo = new THREE.TorusGeometry(0.1, 0.02, 16, 100);
       const windowRim = new THREE.Mesh(windowGeo, new THREE.MeshStandardMaterial({color: 0x333333}));
       windowRim.position.set(0, 0.1, 0.2);
       rocketGroup.add(windowRim);
 
-      // Scale and attach to tracker
       rocketGroup.scale.set(0.8, 0.8, 0.8);
-      rocketGroup.rotation.x = Math.PI / 2; // Lay flat on paper
+      rocketGroup.rotation.x = Math.PI / 2;
       anchor.group.add(rocketGroup);
 
-      // 3. Color Extraction Logic
       const video = document.createElement('video');
       const canvas = document.getElementById('hiddenCanvas');
       const ctx = canvas.getContext('2d');
       let colorsExtracted = false;
 
-      // Sample a region of the video feed and get average color
       function getAverageColor(xPos, yPos, size) {
         if (!video.videoWidth) return null;
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        // Calculate dynamic coordinates based on video size
         const startX = Math.floor(canvas.width * xPos);
         const startY = Math.floor(canvas.height * yPos);
         
@@ -112,38 +105,38 @@
         return new THREE.Color(`rgb(${Math.floor(r/pixelCount)}, ${Math.floor(g/pixelCount)}, ${Math.floor(b/pixelCount)})`);
       }
 
-      // Trigger extraction when image is detected
       anchor.onTargetFound = () => {
         if(!colorsExtracted && video.readyState === video.HAVE_ENOUGH_DATA) {
-          // Extract specific coordinates mapping to the paper
-          // (Percentages represent X/Y location on the camera feed)
-          const bodyColor = getAverageColor(0.50, 0.60, 20); // Center
-          const noseColor = getAverageColor(0.50, 0.30, 20); // Top Center
-          const finColor = getAverageColor(0.30, 0.70, 20);  // Bottom Left
+          const bodyColor = getAverageColor(0.50, 0.60, 20); 
+          const noseColor = getAverageColor(0.50, 0.30, 20); 
+          const finColor = getAverageColor(0.30, 0.70, 20);  
           
           if(bodyColor) matBody.color = bodyColor;
           if(noseColor) matNose.color = noseColor;
           if(finColor) matFins.color = finColor;
           
           colorsExtracted = true;
-          console.log("Colors Extracted & Applied!");
         }
       };
 
-      // 4. Start the AR Engine
+      // 3. Error Catching Wrapper
       document.querySelector("#startButton").addEventListener("click", async () => {
-        document.querySelector("#startButton").style.display = "none";
-        
-        // Grab the internal video element MindAR creates
-        setTimeout(() => {
-          const vids = document.getElementsByTagName('video');
-          if(vids.length > 0) Object.assign(video, vids[0]);
-        }, 1500);
+        try {
+          document.querySelector("#startButton").style.display = "none";
+          
+          setTimeout(() => {
+            const vids = document.getElementsByTagName('video');
+            if(vids.length > 0) Object.assign(video, vids[0]);
+          }, 1500);
 
-        await mindarThree.start();
-        renderer.setAnimationLoop(() => {
-          renderer.render(scene, camera);
-        });
+          await mindarThree.start();
+          renderer.setAnimationLoop(() => {
+            renderer.render(scene, camera);
+          });
+        } catch (error) {
+          alert("Camera initialization failed: " + error.message);
+          document.querySelector("#startButton").style.display = "block";
+        }
       });
     </script>
   </body>
